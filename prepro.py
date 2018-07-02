@@ -9,6 +9,7 @@ import pandas as pd
 import hickle
 import os
 import json
+import pickle
 
 
 def _process_caption_data(caption_file, image_dir, max_length):
@@ -118,6 +119,14 @@ def _build_image_idxs(annotations, id_to_idx):
         image_idxs[i] = id_to_idx[image_id]
     return image_idxs
 
+def save_feats(feats,image_batch_file,save_path_image_feats):
+    print("saving the feats")
+    for i,each in enumerate(image_batch_file):
+        fname = each.split("/")[-1].split(".")[0] + "_feats.npy"
+        fname = os.path.join(save_path_image_feats,fname)
+        print(fname)
+        np.save(fname,feats[i])
+
 
 def main():
     # batch size for extracting feature vectors from vggnet.
@@ -136,17 +145,17 @@ def main():
     train_dataset = _process_caption_data(caption_file='data/annotations/captions_train2014.json',
                                           image_dir='image/train2014_resized/',
                                           max_length=max_length)
-
+    # train_dataset = train_dataset[:22000]
     # about 40000 images and 200000 captions
     val_dataset = _process_caption_data(caption_file='data/annotations/captions_val2014.json',
-                                        image_dir='image/val2014_resized/',
-                                        max_length=max_length)
-
+                                    image_dir='image/val2014_resized/',
+                                    max_length=max_length)
+    # val_dataset = val_dataset[:12000]
     # about 4000 images and 20000 captions for val / test dataset
     val_cutoff = int(0.1 * len(val_dataset))
     test_cutoff = int(0.2 * len(val_dataset))
     print 'Finished processing caption data'
-
+    # Inserting Code for reducing size
     save_pickle(train_dataset, 'data/train/train.annotations.pkl')
     save_pickle(val_dataset[:val_cutoff], 'data/val/val.annotations.pkl')
     save_pickle(val_dataset[val_cutoff:test_cutoff].reset_index(drop=True), 'data/test/test.annotations.pkl')
@@ -187,26 +196,46 @@ def main():
         tf.initialize_all_variables().run()
         for split in ['train', 'val', 'test']:
             anno_path = './data/%s/%s.annotations.pkl' % (split, split)
-            save_path = './data/%s/%s.features.hkl' % (split, split)
+            save_image_chunk_path = './data/%s/%s.image_chunks.pkl' % (split, split)
             annotations = load_pickle(anno_path)
             image_path = list(annotations['file_name'].unique())
-            n_examples = len(image_path)
+            all_image_names = list(annotations['file_name'])
+            n_examples = len(all_image_names)
+            print(n_examples)
+            chunk_size = 10000
+            chunk_iter = int(np.ceil(float(n_examples)/chunk_size))
+            chunk_start = [chunk_size*i for i in range(0,chunk_iter)]
+            chunk_end = [chunk_size*i for i in range(1,chunk_iter+1)]
+            chunk_end[-1] = n_examples
+            # image_chunks = {}
+            for chnk in range(0,chunk_iter):
+                save_path = './data/%s/%s.features' % (split, split)
+                save_path = save_path + "_" + str(chnk)+".pkl"
+                #chunk_size_ = chunk_end[chnk] - chunk_start[chnk]
+                # all_feats = np.ndarray([chunk_size_, 196, 512], dtype=np.float32)
+                all_feats = {}
+                image_path_ = all_image_names[chunk_start[chnk]:chunk_end[chnk]]
+                image_path_ = np.unique(image_path_)
+                chunk_size_ = len(image_path_)
+                # image_chunks[chnk] = image_path_
+                for start, end in zip(range(0, chunk_size_, batch_size),
+                                      range(batch_size, chunk_size_ + batch_size, batch_size)):
+                    image_batch_file = image_path_[start:end]
+                    image_batch = np.array(map(lambda x: ndimage.imread(x, mode='RGB'), image_batch_file)).astype(
+                        np.float32)
+                    # feats = []
+                    feats = sess.run(vggnet.features, feed_dict={vggnet.images: image_batch})
+                    # save_feats(feats,image_batch_file,save_path_image_feats)
+                    for i in range(0,len(image_batch_file)):
+                        all_feats[image_batch_file[i]] =  feats[i]
+                    # all_feats[start:end, :] = feats
+                    print ("Processed %d %s features.." % (end, split))
 
-            all_feats = np.ndarray([n_examples, 196, 512], dtype=np.float32)
-
-            for start, end in zip(range(0, n_examples, batch_size),
-                                  range(batch_size, n_examples + batch_size, batch_size)):
-                image_batch_file = image_path[start:end]
-                image_batch = np.array(map(lambda x: ndimage.imread(x, mode='RGB'), image_batch_file)).astype(
-                    np.float32)
-                feats = sess.run(vggnet.features, feed_dict={vggnet.images: image_batch})
-                all_feats[start:end, :] = feats
-                print ("Processed %d %s features.." % (end, split))
-
-            # use hickle to save huge feature vectors
-            hickle.dump(all_feats, save_path)
-            print ("Saved %s.." % (save_path))
-
+                # use hickle to save huge feature vectors
+                save_pickle(all_feats,save_path)
+                print ("Saved %s.." % (save_path))
+            # pickle.dump(image_chunks,save_image_chunk_path)    
 
 if __name__ == "__main__":
     main()
+
